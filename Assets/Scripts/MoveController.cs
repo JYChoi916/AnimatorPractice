@@ -33,6 +33,11 @@ public class MoveController : MonoBehaviour
     // Animator 컴포넌트 인스턴스
     Animator animator;
 
+    [Range(0, 1)]
+    public float distanceToGround;
+
+
+
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
     {
@@ -50,6 +55,27 @@ public class MoveController : MonoBehaviour
         GroundedCheck();
         // 3. 이동
         Move();
+
+        WaveAction();
+    }
+
+    void WaveAction()
+    {
+        AnimatorStateInfo stateInfo = animator.GetCurrentAnimatorStateInfo(1);
+        if (stateInfo.normalizedTime >= 1)
+        {
+            animator.StopPlayback();
+            animator.Play("Waving", 1, 0);
+        }
+
+        if (stateInfo.normalizedTime > 0.7)
+        {
+            animator.SetLayerWeight(1, 1 - stateInfo.normalizedTime + 0.1f);
+        }
+        else
+        {
+            animator.SetLayerWeight(1, 1);
+        }
     }
 
     void JumpAndGravity()
@@ -80,6 +106,7 @@ public class MoveController : MonoBehaviour
             float diffHeight = previousHeight - transform.position.y;
             if (diffHeight > 0f)
             {
+                Debug.Log("Change to falling");
                 // 애니메이션을 낙하 상태로 전환
                 animator.SetBool("IsFalling", true);
             }
@@ -91,6 +118,7 @@ public class MoveController : MonoBehaviour
 
     void GroundedCheck()
     {
+        // 지면 체크 오브젝트의 포지션에서 groundDistance만큼 구체를 구성해 배경 오브젝트가 있는지 확인
         isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, staticObjectLayerMask);
 
         animator.SetBool("IsGrounded", isGrounded);
@@ -155,10 +183,13 @@ public class MoveController : MonoBehaviour
         // 현재 수평 이동 속도
         float currentMagnitude = inputMagnitude * currentSpeed;
 
-        // currentMagnitu
+        // currentMagnitude가 0 ~ Max 일때, 0~1까지로 압축
         float blendSpeed = currentMagnitude / maxInputMagnitude;
 
+        // 압축된 값을 애니메이션 Blend 수치로 파라미터 전달
         animator.SetFloat("Speed", blendSpeed);
+
+        // 모든 이동 처리가 끝났기 때문에, 현재 높이를 다음 프레임에서 활요하기 위해 저장
         previousHeight = transform.position.y;
     }
 
@@ -168,8 +199,173 @@ public class MoveController : MonoBehaviour
         Quaternion targetRotation = Quaternion.LookRotation(moveDirection);
         transform.rotation = Quaternion.Slerp(currentRotation, targetRotation, rotationFactorPerFrame);
     }
+
     private void OnCollisionEnter(Collision collision)
     {
         Debug.Log("collision!!");
     }
+
+    Vector3 leftFootPosition, rightFootPosition, leftFootIKPosition, rightFootIKPosition;
+    Quaternion leftFootIKRotation, rightFootIKRotation;
+    float lastPelvisPositionY, lastLeftFootPositionY, lastRightFootPositionY;
+
+    [Header("Feet Grounder")]
+    public bool enableFeetIK = true;
+
+    [Range(0, 2)] [SerializeField] private float heightFromGroundRaycast = 1.14f;
+    [Range(0, 2)] [SerializeField] private float raycastDownDistance = 1.5f;
+    [SerializeField] float pelvisOffset = 0f;
+    [Range(0, 1)] [SerializeField] float pelvisUpAndDownSpeed = 0.28f;
+    [Range(0, 1)] [SerializeField] float feetToIKPositionSpeed = 0.5f;
+
+    public string leftFootAnimVariableName = "LeftFootCurve";
+    public string rightFootAnimVariableName = "RightFootCurve";
+
+    public bool useProIKFeature = false;
+    public bool showSolverDebug = true;
+
+    private void FixedUpdate()
+    {
+        if (enableFeetIK == false) return;
+        if (animator == null) return;
+
+        AdjustFeetTarget(ref leftFootPosition, HumanBodyBones.LeftFoot);
+        AdjustFeetTarget(ref rightFootPosition, HumanBodyBones.RightFoot);
+
+        FeetPositionSolver(leftFootPosition, ref leftFootIKPosition, ref leftFootIKRotation);
+        FeetPositionSolver(rightFootPosition, ref rightFootIKPosition, ref rightFootIKRotation);
+    }
+
+    private void OnAnimatorIK(int layerIndex)
+    {
+        if (enableFeetIK == false) return;
+        if (animator == null) return;
+
+        MovePelvisHeight();
+
+        animator.SetIKPositionWeight(AvatarIKGoal.LeftFoot, 1f);
+        if (useProIKFeature)
+        {
+            animator.SetIKRotationWeight(AvatarIKGoal.LeftFoot, animator.GetFloat(leftFootAnimVariableName));
+        }
+
+        MoveFeetToIKPoint(AvatarIKGoal.LeftFoot, leftFootIKPosition, leftFootIKRotation, ref lastLeftFootPositionY);
+
+        animator.SetIKPositionWeight(AvatarIKGoal.RightFoot, 1f);
+        if (useProIKFeature)
+        {
+            animator.SetIKRotationWeight(AvatarIKGoal.RightFoot, animator.GetFloat(rightFootAnimVariableName));
+        }
+
+        MoveFeetToIKPoint(AvatarIKGoal.RightFoot, rightFootIKPosition, rightFootIKRotation, ref lastRightFootPositionY);
+    }
+
+    void MoveFeetToIKPoint(AvatarIKGoal foot, Vector3 positionIKHolder, Quaternion rotationIKHolder, ref float lastFootPositionY)
+    {
+        Vector3 targetIKPosition = animator.GetIKPosition(foot);
+
+        if (positionIKHolder != Vector3.zero)
+        {
+            targetIKPosition = transform.InverseTransformPoint(targetIKPosition);
+            positionIKHolder = transform.InverseTransformPoint(positionIKHolder);
+
+            float yVariable = Mathf.Lerp(lastFootPositionY, positionIKHolder.y, feetToIKPositionSpeed);
+            targetIKPosition.y += yVariable;
+
+            lastFootPositionY = yVariable;
+
+            targetIKPosition = transform.TransformPoint(targetIKPosition);
+
+            animator.SetIKPosition(foot, targetIKPosition);
+        }
+    }
+
+    void MovePelvisHeight()
+    {
+        if (rightFootIKPosition == Vector3.zero || leftFootIKPosition == Vector3.zero || lastPelvisPositionY == 0)
+        {
+            lastPelvisPositionY = animator.bodyPosition.y;
+            return;
+        }
+
+        float lOffsetPosition = leftFootIKPosition.y - transform.position.y;
+        float rOffsetPosition = rightFootIKPosition.y - transform.position.y;
+
+        float totalOffset = lOffsetPosition < rOffsetPosition ? lOffsetPosition : rOffsetPosition;
+
+        Vector3 newPelvisPosition = animator.bodyPosition + Vector3.up * totalOffset;
+        newPelvisPosition.y = Mathf.Lerp(lastPelvisPositionY, newPelvisPosition.y, pelvisUpAndDownSpeed);
+
+        animator.bodyPosition = newPelvisPosition;
+
+        lastPelvisPositionY = animator.bodyPosition.y;
+    }
+
+    void FeetPositionSolver(Vector3 fromSkyPosition, ref Vector3 feetIKPositions, ref Quaternion feetIKRotation)
+    {
+        // raycast handling section
+        RaycastHit feetOutHit;
+
+        if (showSolverDebug)
+            Debug.DrawLine(fromSkyPosition, fromSkyPosition + Vector3.down * (raycastDownDistance + heightFromGroundRaycast), Color.yellow);
+
+        if (Physics.Raycast(fromSkyPosition, Vector3.down, out feetOutHit, raycastDownDistance + heightFromGroundRaycast, staticObjectLayerMask))
+        {
+            feetIKPositions = fromSkyPosition;
+            feetIKPositions.y = feetOutHit.point.y + pelvisOffset;
+            feetIKRotation = Quaternion.FromToRotation(Vector3.up, feetOutHit.normal) * transform.rotation;
+
+            return;
+        }
+
+        feetIKPositions = Vector3.zero;
+
+    }
+
+    void AdjustFeetTarget(ref Vector3 feetPositions, HumanBodyBones foot)
+    {
+        feetPositions = animator.GetBoneTransform(foot).position;
+        feetPositions.y = transform.position.y + heightFromGroundRaycast;
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        if(UnityEngine.Application.isPlaying)
+        {
+            animator = GetComponent<Animator>();
+            RaycastHit hit;
+            Ray ray = new Ray(leftFootPosition + Vector3.up, Vector3.down);
+            if (Physics.Raycast(ray, out hit, distanceToGround + 1f, staticObjectLayerMask))
+            {
+                if (hit.transform.tag == "Walkable")
+                {
+                    Vector3 footPosition = hit.point;
+                    footPosition.y += distanceToGround;
+
+                    Gizmos.color = Color.blue;
+                    Gizmos.DrawSphere(hit.point, 0.03f);
+                    Gizmos.color = Color.red;
+                    Gizmos.DrawLine(hit.point, hit.point + hit.normal * 2f);
+                }
+            }
+
+            ray = new Ray(rightFootPosition + Vector3.up, Vector3.down);
+
+            if (Physics.Raycast(ray, out hit, distanceToGround + 1f, staticObjectLayerMask))
+            {
+                if (hit.transform.tag == "Walkable")
+                {
+                    Vector3 footPosition = hit.point;
+                    footPosition.y += distanceToGround;
+
+                    Gizmos.color = Color.blue;
+                    Gizmos.DrawSphere(hit.point, 0.03f);
+                    Gizmos.color = Color.red;
+                    Gizmos.DrawLine(hit.point, hit.point + hit.normal * 2f);
+                }
+            }
+        }
+    }
+
+    
 }
