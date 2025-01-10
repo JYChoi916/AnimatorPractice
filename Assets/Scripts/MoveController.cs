@@ -56,7 +56,7 @@ public class MoveController : MonoBehaviour
         // 3. ¿Ãµø
         Move();
 
-        WaveAction();
+        //WaveAction();
     }
 
     void WaveAction()
@@ -228,6 +228,7 @@ public class MoveController : MonoBehaviour
     {
         if (enableFeetIK == false) return;
         if (animator == null) return;
+        if (isGrounded == false) return;
 
         AdjustFeetTarget(ref leftFootPosition, HumanBodyBones.LeftFoot);
         AdjustFeetTarget(ref rightFootPosition, HumanBodyBones.RightFoot);
@@ -240,6 +241,7 @@ public class MoveController : MonoBehaviour
     {
         if (enableFeetIK == false) return;
         if (animator == null) return;
+        if (isGrounded == false) return;
 
         MovePelvisHeight();
 
@@ -319,7 +321,6 @@ public class MoveController : MonoBehaviour
         }
 
         feetIKPositions = Vector3.zero;
-
     }
 
     void AdjustFeetTarget(ref Vector3 feetPositions, HumanBodyBones foot)
